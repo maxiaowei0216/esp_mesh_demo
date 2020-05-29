@@ -8,5 +8,5 @@
 #define MESH_NVS_KEY_ROUTER_PASSWORD "rt_pwd"
 
 
-void mesh_start();
+void mesh_start(bool wifi_inited);
 #endif

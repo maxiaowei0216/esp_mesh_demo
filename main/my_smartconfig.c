@@ -22,7 +22,7 @@
 #include "esp_smartconfig.h"
 
 #include "my_smartconfig.h"
-
+#include "my_mesh.h"
 
 
 /* FreeRTOS event group to signal when we are connected & ready to make a request */
@@ -65,8 +65,8 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
 
             smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
             wifi_config_t wifi_config;
-            uint8_t ssid[33] = { 0 };
-            uint8_t password[65] = { 0 };
+            char ssid[33] = { 0 };
+            char password[65] = { 0 };
 
             // 从参数中得到路由器wifi信息
             bzero(&wifi_config, sizeof(wifi_config_t));
@@ -81,6 +81,16 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
             memcpy(password, evt->password, sizeof(evt->password));
             ESP_LOGI(TAG, "SSID:%s", ssid);
             ESP_LOGI(TAG, "PASSWORD:%s", password);
+
+            // 存储路由器信息
+            nvs_handle_t wifi_handle;
+            ESP_ERROR_CHECK( nvs_open(MESH_NVS_KEY_NAMESPACE, NVS_READWRITE, &wifi_handle) );
+            ESP_ERROR_CHECK( nvs_set_i8(wifi_handle, MESH_NVS_KEY_ROUTER_SAVED, 1) );
+            ESP_ERROR_CHECK( nvs_set_str(wifi_handle, MESH_NVS_KEY_ROUTER_SSID, ssid) );
+            ESP_ERROR_CHECK( nvs_set_str(wifi_handle, MESH_NVS_KEY_ROUTER_PASSWORD, password) );
+            ESP_ERROR_CHECK( nvs_commit(wifi_handle) );
+            nvs_close(wifi_handle);
+            ESP_LOGI(TAG, "Router info saved.\n");
 
             // 根据得到的信息连接wifi
             ESP_ERROR_CHECK( esp_wifi_disconnect() );
@@ -121,7 +131,7 @@ static void smartconfig_task(void * parm)
             esp_event_handler_unregister(SC_EVENT, ESP_EVENT_ANY_ID, &event_handler);
 
             // 连接成功，开始mesh
-            // mesh_start();
+            mesh_start(true);
             // smartconfig结束，删除当前任务
             vTaskDelete(NULL);
         }

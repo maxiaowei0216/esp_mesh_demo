@@ -8,7 +8,7 @@
 #include "my_smartconfig.h"
 
 
-static const char *MAIN_TAG = "main";
+static const char *MAIN_TAG = "app_main";
 
 static int router_info_check(void);
 
@@ -25,7 +25,7 @@ static int router_info_check(void)
         // 读取数据
         int8_t router_info_saved = 0;
         err = nvs_get_i8(nvs_handle, MESH_NVS_KEY_ROUTER_SAVED, &router_info_saved);
-
+        // printf("MAIN:MESH_NVS_KEY_ROUTER_SAVED=%d\n",router_info_saved);
         // 关闭NVS
         nvs_close(nvs_handle);
 
@@ -61,7 +61,7 @@ void app_main(void)
     int ret = router_info_check();
     if (ret == 0) { // 已经配置过路由器信息
         ESP_LOGI(MAIN_TAG, "Get router info success, starting mesh!\n");
-        mesh_start();
+        mesh_start(false);
     } else {
         ESP_LOGI(MAIN_TAG, "Get router info failed, starting smartconfig!\n");
         smartconfig_start();
