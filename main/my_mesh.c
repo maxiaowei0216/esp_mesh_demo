@@ -14,8 +14,11 @@
 #include "esp_mesh.h"
 #include "esp_mesh_internal.h"
 #include "nvs_flash.h"
+#include "esp_timer.h"
+#include "freertos/task.h"
 
 #include "my_mesh.h"
+#include "my_smartconfig.h"
 
 /*******************************************************
  *                Macros
@@ -26,7 +29,7 @@
  *******************************************************/
 #define RX_SIZE          (1500)
 #define TX_SIZE          (1460)
-
+#define MESH_TIMEOUT     (60)
 /*******************************************************
  *                Variable Definitions
  *******************************************************/
@@ -38,15 +41,24 @@ static bool is_running = true;
 static bool is_mesh_connected = false;
 static mesh_addr_t mesh_parent_addr;
 static int mesh_layer = -1;
-
+static esp_timer_handle_t mesh_timer;
 /*******************************************************
  *                Function Declarations
  *******************************************************/
+static void esp_mesh_p2p_tx_task(void *arg);
+static void esp_mesh_p2p_rx_task(void *arg);
+static void mesh_timeout_task(void * arg);
+static esp_err_t esp_mesh_comm_p2p_start(void);
+static void mesh_event_handler(void *arg, esp_event_base_t event_base,
+                        int32_t event_id, void *event_data);
+static void ip_event_handler(void *arg, esp_event_base_t event_base,
+                        int32_t event_id, void *event_data);
+static void mesh_timeout_callback(void* arg);
 
 /*******************************************************
  *                Function Definitions
  *******************************************************/
-void esp_mesh_p2p_tx_main(void *arg)
+static void esp_mesh_p2p_tx_task(void *arg)
 {
     int i;
     esp_err_t err;
@@ -112,7 +124,7 @@ void esp_mesh_p2p_tx_main(void *arg)
     vTaskDelete(NULL);
 }
 
-void esp_mesh_p2p_rx_main(void *arg)
+static void esp_mesh_p2p_rx_task(void *arg)
 {
     int recv_count = 0;
     esp_err_t err;
@@ -149,18 +161,42 @@ void esp_mesh_p2p_rx_main(void *arg)
     vTaskDelete(NULL);
 }
 
-esp_err_t esp_mesh_comm_p2p_start(void)
+static void mesh_timeout_task(void * arg)
+{
+    ESP_LOGI(MESH_TAG, "mesh_timer_timeout, start smartconfig!");
+    // 停止并删除定时器
+    esp_timer_stop(mesh_timer);
+    esp_timer_delete(mesh_timer);
+
+    // 取消注册的事件
+    esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler);
+    esp_event_handler_unregister(MESH_EVENT, ESP_EVENT_ANY_ID, &mesh_event_handler);
+
+    // 关闭mesh网络
+    esp_mesh_stop();
+    esp_mesh_deinit();
+
+    // 关闭wifi
+    esp_wifi_stop();
+
+    // 启动smartconfig
+    smartconfig_start(true);
+
+    vTaskDelete(NULL);
+}
+
+static esp_err_t esp_mesh_comm_p2p_start(void)
 {
     static bool is_comm_p2p_started = false;
     if (!is_comm_p2p_started) {
         is_comm_p2p_started = true;
-        xTaskCreate(esp_mesh_p2p_tx_main, "MPTX", 3072, NULL, 5, NULL);
-        xTaskCreate(esp_mesh_p2p_rx_main, "MPRX", 3072, NULL, 5, NULL);
+        xTaskCreate(esp_mesh_p2p_tx_task, "MPTX", 3072, NULL, 5, NULL);
+        xTaskCreate(esp_mesh_p2p_rx_task, "MPRX", 3072, NULL, 5, NULL);
     }
     return ESP_OK;
 }
 
-void mesh_event_handler(void *arg, esp_event_base_t event_base,
+static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                         int32_t event_id, void *event_data)
 {
     mesh_addr_t id = {0,};
@@ -347,11 +383,21 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
-void ip_event_handler(void *arg, esp_event_base_t event_base,
-                      int32_t event_id, void *event_data)
+static void ip_event_handler(void *arg, esp_event_base_t event_base,
+                        int32_t event_id, void *event_data)
 {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
     ESP_LOGI(MESH_TAG, "<IP_EVENT_STA_GOT_IP>IP:%s", ip4addr_ntoa(&event->ip_info.ip));
+}
+
+static void mesh_timeout_callback(void* arg)
+{
+    // 时间到仍然没有连上mesh网络
+    if(is_mesh_connected == false){
+        // 在定时器回调函数中，运行的代码时间尽量短，
+        // 因此创建一个任务来完成关闭mesh,启动smartconfig
+        xTaskCreate(mesh_timeout_task, "mesh_timeout", 1024, NULL, 6, NULL);
+    }
 }
 
 void mesh_start(bool wifi_inited)
@@ -419,4 +465,15 @@ void mesh_start(bool wifi_inited)
     ESP_ERROR_CHECK(esp_mesh_start());
     ESP_LOGI(MESH_TAG, "mesh starts successfully, heap:%d, %s\n",  esp_get_free_heap_size(),
              esp_mesh_is_root_fixed() ? "root fixed" : "root not fixed");
+
+    /* 启动超时定时器（1分钟） */
+    // 定时器参数
+    const esp_timer_create_args_t mesh_timer_args = {
+        .callback = &mesh_timeout_callback,
+        .name = "mesh-timeout"
+    };
+    // 创建定时器
+    ESP_ERROR_CHECK(esp_timer_create(&mesh_timer_args, &mesh_timer));
+    // 启动定时器
+    ESP_ERROR_CHECK(esp_timer_start_once(mesh_timer, (MESH_TIMEOUT)*1000*1000));
 }

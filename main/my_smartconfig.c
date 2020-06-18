@@ -139,13 +139,16 @@ static void smartconfig_task(void * parm)
 }
 
 
-void smartconfig_start(void)
+void smartconfig_start(bool wifi_inited)
 {
     s_wifi_event_group = xEventGroupCreate();
     // ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
+    if (wifi_inited != true){
+            // 初始化wifi
+            wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
+            ESP_ERROR_CHECK(esp_wifi_init(&config));
+        }
 
     // 注册相关事件的处理函数
     ESP_ERROR_CHECK( esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL) );

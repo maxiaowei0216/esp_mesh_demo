@@ -64,6 +64,6 @@ void app_main(void)
         mesh_start(false);
     } else {
         ESP_LOGI(MAIN_TAG, "Get router info failed, starting smartconfig!\n");
-        smartconfig_start();
+        smartconfig_start(false);
     }
 }
