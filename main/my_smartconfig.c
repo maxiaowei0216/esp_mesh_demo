@@ -21,22 +21,28 @@
 #include "tcpip_adapter.h"
 #include "esp_smartconfig.h"
 
+#include "my_main.h"
 #include "my_smartconfig.h"
 #include "my_mesh.h"
 
 
-/* FreeRTOS event group to signal when we are connected & ready to make a request */
+/*******************************************************
+ *                Variable Definitions
+ *******************************************************/
 static EventGroupHandle_t s_wifi_event_group;
 
-/* The event group allows multiple bits for each event,
-   but we only care about one event - are we connected
-   to the AP with an IP? */
 static const int CONNECTED_BIT = BIT0;
 static const int ESPTOUCH_DONE_BIT = BIT1;
 static const char *TAG = "my_smartconfig";
 
+/*******************************************************
+ *                Function Declarations
+ *******************************************************/
 static void smartconfig_task(void * parm);
 
+/*******************************************************
+ *                Function Definitions
+ *******************************************************/
 // 事件处理函数
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
@@ -131,23 +137,23 @@ static void smartconfig_task(void * parm)
             esp_event_handler_unregister(SC_EVENT, ESP_EVENT_ANY_ID, &event_handler);
 
             // 连接成功，开始mesh
-            mesh_start(true);
+            mesh_start();
             // smartconfig结束，删除当前任务
             vTaskDelete(NULL);
         }
     }
 }
 
-
-void smartconfig_start(bool wifi_inited)
+void smartconfig_start(void)
 {
     s_wifi_event_group = xEventGroupCreate();
     // ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    if (wifi_inited != true){
+    if (main_get_wifi_init() != true){ // 未初始化过wifi
             // 初始化wifi
             wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
             ESP_ERROR_CHECK(esp_wifi_init(&config));
+            main_set_wifi_init(true);
         }
 
     // 注册相关事件的处理函数

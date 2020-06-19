@@ -4,15 +4,25 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
+#include "my_main.h"
 #include "my_mesh.h"
 #include "my_smartconfig.h"
 
 
+/*******************************************************
+ *                Variable Definitions
+ *******************************************************/
 static const char *MAIN_TAG = "app_main";
+static bool wifi_inited = false;
 
+/*******************************************************
+ *                Function Declarations
+ *******************************************************/
 static int router_info_check(void);
 
-
+/*******************************************************
+ *                Function Definitions
+ *******************************************************/
 static int router_info_check(void)
 {
     nvs_handle_t nvs_handle;
@@ -39,6 +49,16 @@ static int router_info_check(void)
     }
 }
 
+bool main_get_wifi_init(void)
+{
+    return wifi_inited;
+}
+
+void main_set_wifi_init(bool init)
+{
+    wifi_inited = init;
+}
+
 void app_main(void)
 {
     // 初始化NVS
@@ -61,9 +81,9 @@ void app_main(void)
     int ret = router_info_check();
     if (ret == 0) { // 已经配置过路由器信息
         ESP_LOGI(MAIN_TAG, "Get router info success, starting mesh!\n");
-        mesh_start(false);
+        mesh_start();
     } else {
         ESP_LOGI(MAIN_TAG, "Get router info failed, starting smartconfig!\n");
-        smartconfig_start(false);
+        smartconfig_start();
     }
 }

@@ -17,6 +17,7 @@
 #include "esp_timer.h"
 #include "freertos/task.h"
 
+#include "my_main.h"
 #include "my_mesh.h"
 #include "my_smartconfig.h"
 
@@ -42,6 +43,7 @@ static bool is_mesh_connected = false;
 static mesh_addr_t mesh_parent_addr;
 static int mesh_layer = -1;
 static esp_timer_handle_t mesh_timer;
+
 /*******************************************************
  *                Function Declarations
  *******************************************************/
@@ -180,7 +182,7 @@ static void mesh_timeout_task(void * arg)
     esp_wifi_stop();
 
     // 启动smartconfig
-    smartconfig_start(true);
+    smartconfig_start();
 
     vTaskDelete(NULL);
 }
@@ -268,6 +270,10 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         if (esp_mesh_is_root()) {
             tcpip_adapter_dhcpc_start(TCPIP_ADAPTER_IF_STA);
         }
+        // 停止并删除定时器
+        esp_timer_stop(mesh_timer);
+        esp_timer_delete(mesh_timer);
+        // 创建发送和接收任务
         esp_mesh_comm_p2p_start();
     }
     break;
@@ -398,9 +404,14 @@ static void mesh_timeout_callback(void* arg)
         // 因此创建一个任务来完成关闭mesh,启动smartconfig
         xTaskCreate(mesh_timeout_task, "mesh_timeout", 1024, NULL, 6, NULL);
     }
+    else {
+        // 停止并删除定时器
+        esp_timer_stop(mesh_timer);
+        esp_timer_delete(mesh_timer);
+    }
 }
 
-void mesh_start(bool wifi_inited)
+void mesh_start(void)
 {
     // 从NVS中获取路由器wifi信息
     char ssid[33] = { 0 };
@@ -427,10 +438,11 @@ void mesh_start(bool wifi_inited)
     ESP_ERROR_CHECK(tcpip_adapter_dhcpc_stop(TCPIP_ADAPTER_IF_STA));
 
     // wifi未初始化
-    if (wifi_inited != true){
+    if (main_get_wifi_init() != true){
         // 初始化wifi
         wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_wifi_init(&config));
+        main_set_wifi_init(true);
     }
     
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL));
@@ -466,7 +478,7 @@ void mesh_start(bool wifi_inited)
     ESP_LOGI(MESH_TAG, "mesh starts successfully, heap:%d, %s\n",  esp_get_free_heap_size(),
              esp_mesh_is_root_fixed() ? "root fixed" : "root not fixed");
 
-    /* 启动超时定时器（1分钟） */
+    /* 设定并启动超时定时器*/
     // 定时器参数
     const esp_timer_create_args_t mesh_timer_args = {
         .callback = &mesh_timeout_callback,
