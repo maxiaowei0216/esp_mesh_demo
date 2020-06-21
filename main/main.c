@@ -71,7 +71,7 @@ void app_main(void)
     ESP_ERROR_CHECK( err );
 
     // 初始化tcp/ip
-    tcpip_adapter_init();
+    ESP_ERROR_CHECK(esp_netif_init());
 
     // 初始化事件循环
     ESP_ERROR_CHECK(esp_event_loop_create_default());

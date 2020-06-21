@@ -30,7 +30,13 @@
  *******************************************************/
 #define RX_SIZE          (1500)
 #define TX_SIZE          (1460)
-#define MESH_TIMEOUT     (60)
+#if 0
+  // 测试时减少超时时间
+  #define MESH_TIMEOUT   (20)
+#else
+  // 联网超时时间暂定为2分钟
+  #define MESH_TIMEOUT   (120)
+#endif
 /*******************************************************
  *                Variable Definitions
  *******************************************************/
@@ -42,14 +48,13 @@ static bool is_running = true;
 static bool is_mesh_connected = false;
 static mesh_addr_t mesh_parent_addr;
 static int mesh_layer = -1;
-static esp_timer_handle_t mesh_timer;
-
+static esp_timer_handle_t mesh_timer;   /* 定时器handle */
+static esp_netif_t *netif_mesh = NULL;  /* mesh网络层handle */
 /*******************************************************
  *                Function Declarations
  *******************************************************/
 static void esp_mesh_p2p_tx_task(void *arg);
 static void esp_mesh_p2p_rx_task(void *arg);
-static void mesh_timeout_task(void * arg);
 static esp_err_t esp_mesh_comm_p2p_start(void);
 static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                         int32_t event_id, void *event_data);
@@ -163,30 +168,6 @@ static void esp_mesh_p2p_rx_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void mesh_timeout_task(void * arg)
-{
-    ESP_LOGI(MESH_TAG, "mesh_timer_timeout, start smartconfig!");
-    // 停止并删除定时器
-    esp_timer_stop(mesh_timer);
-    esp_timer_delete(mesh_timer);
-
-    // 取消注册的事件
-    esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler);
-    esp_event_handler_unregister(MESH_EVENT, ESP_EVENT_ANY_ID, &mesh_event_handler);
-
-    // 关闭mesh网络
-    esp_mesh_stop();
-    esp_mesh_deinit();
-
-    // 关闭wifi
-    esp_wifi_stop();
-
-    // 启动smartconfig
-    smartconfig_start();
-
-    vTaskDelete(NULL);
-}
-
 static esp_err_t esp_mesh_comm_p2p_start(void)
 {
     static bool is_comm_p2p_started = false;
@@ -273,6 +254,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         // 停止并删除定时器
         esp_timer_stop(mesh_timer);
         esp_timer_delete(mesh_timer);
+        ESP_LOGI(MESH_TAG, "mesh timer deleted.");
         // 创建发送和接收任务
         esp_mesh_comm_p2p_start();
     }
@@ -393,21 +375,36 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
                         int32_t event_id, void *event_data)
 {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
-    ESP_LOGI(MESH_TAG, "<IP_EVENT_STA_GOT_IP>IP:%s", ip4addr_ntoa(&event->ip_info.ip));
+    ESP_LOGI(MESH_TAG, "<IP_EVENT_STA_GOT_IP>IP:" IPSTR, IP2STR(&event->ip_info.ip));
 }
 
 static void mesh_timeout_callback(void* arg)
 {
+    ESP_LOGW(MESH_TAG, "mesh timer callback!");
+    // 停止并删除定时器
+    esp_timer_stop(mesh_timer);
+    esp_timer_delete(mesh_timer);
+    
     // 时间到仍然没有连上mesh网络
     if(is_mesh_connected == false){
-        // 在定时器回调函数中，运行的代码时间尽量短，
-        // 因此创建一个任务来完成关闭mesh,启动smartconfig
-        xTaskCreate(mesh_timeout_task, "mesh_timeout", 1024, NULL, 6, NULL);
-    }
-    else {
-        // 停止并删除定时器
-        esp_timer_stop(mesh_timer);
-        esp_timer_delete(mesh_timer);
+        // 取消注册的事件
+        esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler);
+        esp_event_handler_unregister(MESH_EVENT, ESP_EVENT_ANY_ID, &mesh_event_handler);
+
+        // 关闭mesh网络
+        esp_mesh_stop();
+        esp_mesh_deinit();
+
+        // 关闭wifi
+        esp_wifi_stop();
+        ESP_LOGW(MESH_TAG, "wifi stop.");
+
+        // 销毁创建的mesh网络接口
+        esp_netif_destroy(netif_mesh);
+        netif_mesh = NULL;
+
+        // 启动smartconfig
+        smartconfig_start();
     }
 }
 
@@ -430,12 +427,10 @@ void mesh_start(void)
     nvs_close(wifi_handle);
     // printf("Read router success,ssid=%s,psw=%s\n",ssid,password);
 
-    /* for mesh
-     * stop DHCP server on softAP interface by default
-     * stop DHCP client on station interface by default
-     * */
-    ESP_ERROR_CHECK(tcpip_adapter_dhcps_stop(TCPIP_ADAPTER_IF_AP));
-    ESP_ERROR_CHECK(tcpip_adapter_dhcpc_stop(TCPIP_ADAPTER_IF_STA));
+    // 为mesh创建网络接口
+    if(netif_mesh == NULL) {
+        ESP_ERROR_CHECK(esp_netif_create_default_wifi_mesh_netifs(&netif_mesh, NULL));
+    }
 
     // wifi未初始化
     if (main_get_wifi_init() != true){
@@ -452,10 +447,14 @@ void mesh_start(void)
     /*  mesh initialization */
     ESP_ERROR_CHECK(esp_mesh_init());
     ESP_ERROR_CHECK(esp_event_handler_register(MESH_EVENT, ESP_EVENT_ANY_ID, &mesh_event_handler, NULL));
-    // mesh网络最大层数，在menuconfig中设置
+    // 设定mesh拓扑结构
+    ESP_ERROR_CHECK(esp_mesh_set_topology(CONFIG_MESH_TOPOLOGY));
+    // mesh网络最大层数
     ESP_ERROR_CHECK(esp_mesh_set_max_layer(CONFIG_MESH_MAX_LAYER));
     // 根节点投票阈值，默认为0.9
     ESP_ERROR_CHECK(esp_mesh_set_vote_percentage(1));
+    // 禁用mesh Power Save功能
+    ESP_ERROR_CHECK(esp_mesh_disable_ps());
     // 超时时间，子节点超过此时间无数据则被剔除
     ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(10));
 
