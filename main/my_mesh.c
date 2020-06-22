@@ -30,8 +30,9 @@
 /*******************************************************
  *                Constants
  *******************************************************/
-#define RX_SIZE          (1500)
-#define TX_SIZE          (1460)
+// #define SEND_TO_SERVER
+// #define RX_SIZE          (1500)
+// #define TX_SIZE          (1460)
 #if 0
   // 测试时减少超时时间
   #define MESH_TIMEOUT   (20)
@@ -73,6 +74,11 @@ static void my_mesh_task(void *arg)
     my_sensorif_ctrl_t ctrl = {0};  /* 需要发送的sensor控制数据 */
     my_sensorif_data_t data = {0};  /* 接收到的sensor数据 */
     uint8_t sensor_ctrl = 1;        /* (假设的)控制sensor读取需要的数值 */
+
+#ifdef SEND_TO_SERVER
+    mesh_data_t mesh_data;
+#endif
+
     ESP_LOGW(MESH_TAG, "MESH TASK START!");
     while(1) {
         // 从队列中读取sensorif发送的数据，无数据不等待
@@ -80,12 +86,36 @@ static void my_mesh_task(void *arg)
         // 接收到sensor数据
         if(ret == pdTRUE) {
             ESP_LOGI(MESH_TAG, "Some data received from mesh queue!");
+        #ifndef SEND_TO_SERVER
             // 向服务器发送采集到的数据(没有服务器，此处直接打印出来)
             for(uint8_t i = 0; i < data.num; i++){
                 // 此处假设传递的数据为 uint8_t 类型
                 uint8_t dt = *(uint8_t *)(data.data + i*sizeof(uint8_t));
                 ESP_LOGW(MESH_TAG, "data[%d] : %d", i, dt);
             }
+        #else
+            // 向服务器(1.2.3.4:80)发送数据
+            mesh_data.proto = MESH_PROTO_HTTP;
+            mesh_data.tos   = MESH_TOS_P2P;
+            mesh_data.size  = (data.num + 1) * sizeof(uint8_t);
+
+            // 申请内存存放mesh数据包
+            uint8_t *ptr = pvPortMalloc(mesh_data.size);    
+
+            ptr[0] = data.num;
+            // 复制sensor读取到的数据
+            memcpy(ptr+1, data.data, data.num * sizeof(uint8_t));
+            mesh_data.data = ptr;
+            // 配置外部网络地址
+            mesh_addr_t mesh_addr;
+            IP4_ADDR(&mesh_addr.mip.ip4,1,2,3,4);
+            mesh_addr.mip.port = 80;
+            // 发送到外部网络
+            esp_mesh_send(&mesh_addr, &mesh_data, MESH_DATA_TODS, NULL, 0);
+
+            // 释放申请的内存
+            vPortFree(ptr);
+        #endif
         }
         else {
             ESP_LOGI(MESH_TAG, "No data received from mesh queue!");
