@@ -3,10 +3,13 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "freertos/queue.h"
 
 #include "my_main.h"
 #include "my_mesh.h"
 #include "my_smartconfig.h"
+#include "my_sensorif.h"
+#include "example_sensor.h"
 
 
 /*******************************************************
@@ -14,6 +17,10 @@
  *******************************************************/
 static const char *MAIN_TAG = "app_main";
 static bool wifi_inited = false;
+// sensor接口任务使用的消息队列，接收其他任务发送的控制信息
+static QueueHandle_t sensorif_queue;
+// mesh任务使用的消息队列，主要接收sensor接口任务发送的sensor数据
+static QueueHandle_t mesh_queue;
 
 /*******************************************************
  *                Function Declarations
@@ -59,6 +66,16 @@ void main_set_wifi_init(bool init)
     wifi_inited = init;
 }
 
+QueueHandle_t main_get_sensorif_queue(void)
+{
+    return sensorif_queue;
+}
+
+QueueHandle_t main_get_mesh_queue(void)
+{
+    return mesh_queue;
+}
+
 void app_main(void)
 {
     // 初始化NVS
@@ -76,6 +93,18 @@ void app_main(void)
     // 初始化事件循环
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+    // 创建消息队列
+    /* 接收sensor控制信息的队列 */
+    sensorif_queue = xQueueCreate(5, sizeof(my_sensorif_ctrl_t));
+    if(sensorif_queue == 0) {
+        ESP_LOGE(MAIN_TAG, "Sensorif queue create failed!");
+    }
+    /* 接收sensor采集到的数据的队列 */
+    mesh_queue     = xQueueCreate(5, sizeof(my_sensorif_data_t));
+    if(mesh_queue == 0) {
+        ESP_LOGE(MAIN_TAG, "Mesh queue create failed!");
+    }
+
     // 检查是否配置过mesh的路由器信息
     // 未配置的话启动smartconfig，利用手机app进行配置
     int ret = router_info_check();
@@ -86,4 +115,8 @@ void app_main(void)
         ESP_LOGI(MAIN_TAG, "Get router info failed, starting smartconfig!\n");
         smartconfig_start();
     }
+
+    // 注册示例sensor到sensor接口
+    example_sensor_init();
+
 }

@@ -7,6 +7,7 @@
    CONDITIONS OF ANY KIND, either express or implied.
 */
 #include <string.h>
+#include <stdio.h>
 #include "esp_wifi.h"
 #include "esp_system.h"
 #include "esp_event.h"
@@ -20,6 +21,7 @@
 #include "my_main.h"
 #include "my_mesh.h"
 #include "my_smartconfig.h"
+#include "my_sensorif.h"
 
 /*******************************************************
  *                Macros
@@ -42,9 +44,9 @@
  *******************************************************/
 static const char *MESH_TAG = "mesh_main";
 static const uint8_t MESH_ID[6] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
-static uint8_t tx_buf[TX_SIZE] = { 0, };
-static uint8_t rx_buf[RX_SIZE] = { 0, };
-static bool is_running = true;
+// static uint8_t tx_buf[TX_SIZE] = { 0, };
+// static uint8_t rx_buf[RX_SIZE] = { 0, };
+// static bool is_running = true;
 static bool is_mesh_connected = false;
 static mesh_addr_t mesh_parent_addr;
 static int mesh_layer = -1;
@@ -53,9 +55,8 @@ static esp_netif_t *netif_mesh = NULL;  /* mesh网络层handle */
 /*******************************************************
  *                Function Declarations
  *******************************************************/
-static void esp_mesh_p2p_tx_task(void *arg);
-static void esp_mesh_p2p_rx_task(void *arg);
-static esp_err_t esp_mesh_comm_p2p_start(void);
+static void my_mesh_task(void *arg);
+static esp_err_t my_mesh_task_start(void);
 static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                         int32_t event_id, void *event_data);
 static void ip_event_handler(void *arg, esp_event_base_t event_base,
@@ -65,116 +66,67 @@ static void mesh_timeout_callback(void* arg);
 /*******************************************************
  *                Function Definitions
  *******************************************************/
-static void esp_mesh_p2p_tx_task(void *arg)
+static void my_mesh_task(void *arg)
 {
-    int i;
-    esp_err_t err;
-    int send_count = 0;
-    mesh_addr_t route_table[CONFIG_MESH_ROUTE_TABLE_SIZE];
-    int route_table_size = 0;
-    mesh_data_t data;
-    data.data = tx_buf;
-    data.size = sizeof(tx_buf);
-    data.proto = MESH_PROTO_BIN;
-    data.tos = MESH_TOS_P2P;
-    is_running = true;
-
-    while (is_running) {
-        /* non-root do nothing but print */
-        if (!esp_mesh_is_root()) {
-            ESP_LOGI(MESH_TAG, "layer:%d, rtableSize:%d, %s", mesh_layer,
-                     esp_mesh_get_routing_table_size(),
-                     (is_mesh_connected && esp_mesh_is_root()) ? "ROOT" : is_mesh_connected ? "NODE" : "DISCONNECT");
-            vTaskDelay(10 * 1000 / portTICK_RATE_MS);
-            continue;
-        }
-        esp_mesh_get_routing_table((mesh_addr_t *) &route_table,
-                                   CONFIG_MESH_ROUTE_TABLE_SIZE * 6, &route_table_size);
-        if (send_count && !(send_count % 100)) {
-            ESP_LOGI(MESH_TAG, "size:%d/%d,send_count:%d", route_table_size,
-                     esp_mesh_get_routing_table_size(), send_count);
-        }
-        send_count++;
-        tx_buf[25] = (send_count >> 24) & 0xff;
-        tx_buf[24] = (send_count >> 16) & 0xff;
-        tx_buf[23] = (send_count >> 8) & 0xff;
-        tx_buf[22] = (send_count >> 0) & 0xff;
-        if (send_count % 2) {
-            // memcpy(tx_buf, (uint8_t *)&light_on, sizeof(light_on));
-        } else {
-            // memcpy(tx_buf, (uint8_t *)&light_off, sizeof(light_off));
-        }
-
-        for (i = 0; i < route_table_size; i++) {
-            err = esp_mesh_send(&route_table[i], &data, MESH_DATA_P2P, NULL, 0);
-            if (err) {
-                ESP_LOGE(MESH_TAG,
-                         "[ROOT-2-UNICAST:%d][L:%d]parent:"MACSTR" to "MACSTR", heap:%d[err:0x%x, proto:%d, tos:%d]",
-                         send_count, mesh_layer, MAC2STR(mesh_parent_addr.addr),
-                         MAC2STR(route_table[i].addr), esp_get_free_heap_size(),
-                         err, data.proto, data.tos);
-            } else if (!(send_count % 100)) {
-                ESP_LOGW(MESH_TAG,
-                         "[ROOT-2-UNICAST:%d][L:%d][rtableSize:%d]parent:"MACSTR" to "MACSTR", heap:%d[err:0x%x, proto:%d, tos:%d]",
-                         send_count, mesh_layer,
-                         esp_mesh_get_routing_table_size(),
-                         MAC2STR(mesh_parent_addr.addr),
-                         MAC2STR(route_table[i].addr), esp_get_free_heap_size(),
-                         err, data.proto, data.tos);
+    BaseType_t ret;
+    uint8_t count = 0;
+    my_sensorif_ctrl_t ctrl = {0};  /* 需要发送的sensor控制数据 */
+    my_sensorif_data_t data = {0};  /* 接收到的sensor数据 */
+    uint8_t sensor_ctrl = 1;        /* (假设的)控制sensor读取需要的数值 */
+    ESP_LOGW(MESH_TAG, "MESH TASK START!");
+    while(1) {
+        // 从队列中读取sensorif发送的数据，无数据不等待
+        ret = xQueueReceive(main_get_mesh_queue(), &data, 0);
+        // 接收到sensor数据
+        if(ret == pdTRUE) {
+            ESP_LOGI(MESH_TAG, "Some data received from mesh queue!");
+            // 向服务器发送采集到的数据(没有服务器，此处直接打印出来)
+            for(uint8_t i = 0; i < data.num; i++){
+                // 此处假设传递的数据为 uint8_t 类型
+                uint8_t dt = *(uint8_t *)(data.data + i*sizeof(uint8_t));
+                ESP_LOGW(MESH_TAG, "data[%d] : %d", i, dt);
             }
         }
-        /* if route_table_size is less than 10, add delay to avoid watchdog in this task. */
-        if (route_table_size < 10) {
-            vTaskDelay(1 * 1000 / portTICK_RATE_MS);
+        else {
+            ESP_LOGI(MESH_TAG, "No data received from mesh queue!");
         }
+
+        /* XXX: 实际应用中需要修改
+         * 手动读取指定sensor的数据，
+         * 实际使用中应该读取其他任务发送的队列消息
+         */
+    #if 1
+        count++;
+        // 约每5秒手动查询某一sensor的数值
+        if( (count % 50) == 0 ) {
+            // 向sensorif队列发送控制数据，等待1s
+            // 使用的是read函数，获取到的数值为10
+            ctrl.sid = 1;
+            ctrl.ctrl = &sensor_ctrl;
+            xQueueSend(main_get_sensorif_queue(), &ctrl, (1000 / portTICK_PERIOD_MS));
+            ESP_LOGW(MESH_TAG, "Send data to sensorif queue!");
+        }
+    #else
+        ret = xQueueReceive(mesh_ctrl_queue, &ctrl, 0);
+        if(ret == pdTRUE){
+            if(ctrl.sid != 0) {
+                xQueueSend(main_get_sensorif_queue(), &ctrl, (1000 / portTICK_PERIOD_MS));
+            }
+        }
+    #endif
+        vTaskDelay(100 / portTICK_PERIOD_MS);
     }
     vTaskDelete(NULL);
 }
 
-static void esp_mesh_p2p_rx_task(void *arg)
+static esp_err_t my_mesh_task_start(void)
 {
-    int recv_count = 0;
-    esp_err_t err;
-    mesh_addr_t from;
-    int send_count = 0;
-    mesh_data_t data;
-    int flag = 0;
-    data.data = rx_buf;
-    data.size = RX_SIZE;
-    is_running = true;
-
-    while (is_running) {
-        data.size = RX_SIZE;
-        err = esp_mesh_recv(&from, &data, portMAX_DELAY, &flag, NULL, 0);
-        if (err != ESP_OK || !data.size) {
-            ESP_LOGE(MESH_TAG, "err:0x%x, size:%d", err, data.size);
-            continue;
-        }
-        /* extract send count */
-        if (data.size >= sizeof(send_count)) {
-            send_count = (data.data[25] << 24) | (data.data[24] << 16)
-                         | (data.data[23] << 8) | data.data[22];
-        }
-        recv_count++;
-        if (!(recv_count % 1)) {
-            ESP_LOGW(MESH_TAG,
-                     "[#RX:%d/%d][L:%d] parent:"MACSTR", receive from "MACSTR", size:%d, heap:%d, flag:%d[err:0x%x, proto:%d, tos:%d]",
-                     recv_count, send_count, mesh_layer,
-                     MAC2STR(mesh_parent_addr.addr), MAC2STR(from.addr),
-                     data.size, esp_get_free_heap_size(), flag, err, data.proto,
-                     data.tos);
-        }
-    }
-    vTaskDelete(NULL);
-}
-
-static esp_err_t esp_mesh_comm_p2p_start(void)
-{
-    static bool is_comm_p2p_started = false;
-    if (!is_comm_p2p_started) {
-        is_comm_p2p_started = true;
-        xTaskCreate(esp_mesh_p2p_tx_task, "MPTX", 3072, NULL, 5, NULL);
-        xTaskCreate(esp_mesh_p2p_rx_task, "MPRX", 3072, NULL, 5, NULL);
+    static bool is_task_started = false;
+    if (!is_task_started) {
+        is_task_started = true;
+        xTaskCreate(my_mesh_task, "MPTX", 3072, NULL, 5, NULL);
+        // 创建sensorif任务,使之发送sensor数据到mesh任务中
+        sensorif_init();
     }
     return ESP_OK;
 }
@@ -255,8 +207,8 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         esp_timer_stop(mesh_timer);
         esp_timer_delete(mesh_timer);
         ESP_LOGI(MESH_TAG, "mesh timer deleted.");
-        // 创建发送和接收任务
-        esp_mesh_comm_p2p_start();
+        // 创建mesh任務
+        my_mesh_task_start();
     }
     break;
     case MESH_EVENT_PARENT_DISCONNECTED: {

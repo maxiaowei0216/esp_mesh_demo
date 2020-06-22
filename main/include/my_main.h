@@ -10,5 +10,8 @@
 bool main_get_wifi_init(void);
 void main_set_wifi_init(bool init);
 
+// 获取队列
+QueueHandle_t main_get_sensorif_queue(void);
+QueueHandle_t main_get_mesh_queue(void);
 
 #endif
