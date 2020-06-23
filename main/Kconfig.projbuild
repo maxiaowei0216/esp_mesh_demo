@@ -162,5 +162,25 @@ menu "Mesh Configuration"
         default 50
         help
             The number of devices over the network(max: 300).
+
+    config MESH_ENABLE_TIMEOUT
+        bool "Enable mesh timeout function"
+        default y
+        help
+            If enabled, SmartConfig would be started after timeout.
+
+    config MESH_TIMEOUT_TIME
+        int "Mesh timeout time"
+        depends on MESH_ENABLE_TIMEOUT
+        default 120
+        help
+            Mesh timeout time
+
+    config MESH_DATA_SEND_TO_SERVER
+        bool "Mesh data send to server"
+        default n
+        help
+            After receiving the message, send it to server or print it
+
 endmenu
 

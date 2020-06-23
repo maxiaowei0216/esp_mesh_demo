@@ -25,22 +25,6 @@
 #include "my_sensorif.h"
 
 /*******************************************************
- *                Macros
- *******************************************************/
-
-/*******************************************************
- *                Constants
- *******************************************************/
-// #define SEND_TO_SERVER
-#define MESH_USE_TIMER  (1)
-#if 1
-  // 测试时减少超时时间
-  #define MESH_TIMEOUT   (30)
-#else
-  // 联网超时时间暂定为2分钟
-  #define MESH_TIMEOUT   (120)
-#endif
-/*******************************************************
  *                Variable Definitions
  *******************************************************/
 static const char *MESH_TAG = "mesh_main";
@@ -50,7 +34,7 @@ static mesh_addr_t mesh_parent_addr;
 static int mesh_layer = -1;
 static esp_netif_t *netif_mesh_sta, *netif_mesh_ap;  /* mesh网络层handle */
 
-#if MESH_USE_TIMER
+#if CONFIG_MESH_ENABLE_TIMEOUT
 static esp_timer_handle_t mesh_timer;   /* 定时器handle */
 #endif
 
@@ -64,7 +48,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
 static void ip_event_handler(void *arg, esp_event_base_t event_base,
                         int32_t event_id, void *event_data);
 
-#if MESH_USE_TIMER
+#if CONFIG_MESH_ENABLE_TIMEOUT
 static void mesh_timeout_callback(void* arg);
 #endif
 
@@ -79,25 +63,18 @@ static void my_mesh_task(void *arg)
     my_sensorif_data_t data = {0};  /* 接收到的sensor数据 */
     uint8_t sensor_ctrl = 1;        /* (假设的)控制sensor读取需要的数值 */
 
-#ifdef SEND_TO_SERVER
+#if CONFIG_MESH_DATA_SEND_TO_SERVER
     mesh_data_t mesh_data;
 #endif
 
-    ESP_LOGW(MESH_TAG, "MESH TASK START!");
     while(1) {
         // 从队列中读取sensorif发送的数据，无数据不等待
         ret = xQueueReceive(main_get_mesh_queue(), &data, 0);
         // 接收到sensor数据
         if(ret == pdTRUE) {
             ESP_LOGI(MESH_TAG, "Some data received from mesh queue!");
-        #ifndef SEND_TO_SERVER
-            // 向服务器发送采集到的数据(没有服务器，此处直接打印出来)
-            for(uint8_t i = 0; i < data.num; i++){
-                // 此处假设传递的数据为 uint8_t 类型
-                uint8_t dt = *(uint8_t *)(data.data + i*sizeof(uint8_t));
-                ESP_LOGW(MESH_TAG, "data[%d] : %d", i, dt);
-            }
-        #else
+            // 向服务器发送采集到的数据
+        #if CONFIG_MESH_DATA_SEND_TO_SERVER
             // 向服务器(1.2.3.4:80)发送数据
             mesh_data.proto = MESH_PROTO_HTTP;
             mesh_data.tos   = MESH_TOS_P2P;
@@ -119,6 +96,13 @@ static void my_mesh_task(void *arg)
 
             // 释放申请的内存
             vPortFree(ptr);
+        #else
+            // 没有服务器，此处直接打印出来
+            for(uint8_t i = 0; i < data.num; i++){
+                // 此处假设传递的数据为 uint8_t 类型
+                uint8_t dt = *(uint8_t *)(data.data + i*sizeof(uint8_t));
+                ESP_LOGW(MESH_TAG, "data[%d] : %d", i, dt);
+            }
         #endif
         }
         else {
@@ -177,7 +161,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(MESH_TAG, "<MESH_EVENT_MESH_STARTED>ID:"MACSTR"", MAC2STR(id.addr));
         is_mesh_connected = false;
         mesh_layer = esp_mesh_get_layer();
-#if MESH_USE_TIMER
+#if CONFIG_MESH_ENABLE_TIMEOUT
         /* 设定并启动超时定时器*/
         // 定时器参数
         const esp_timer_create_args_t mesh_timer_args = {
@@ -187,7 +171,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         // 创建定时器
         ESP_ERROR_CHECK(esp_timer_create(&mesh_timer_args, &mesh_timer));
         // 启动定时器
-        ESP_ERROR_CHECK(esp_timer_start_once(mesh_timer, (MESH_TIMEOUT)*1000*1000));
+        ESP_ERROR_CHECK(esp_timer_start_once(mesh_timer, (CONFIG_MESH_TIMEOUT_TIME)*1000*1000));
 #endif
     }
     break;
@@ -246,12 +230,9 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         is_mesh_connected = true;
         if (esp_mesh_is_root()) {
             // 开启dhcp
-            esp_err_t err = esp_netif_dhcpc_start(netif_mesh_sta);
-            if(err != ESP_OK) {
-                ESP_LOGE(MESH_TAG, "mesh start dhcpc err = %X",err);
-            }
+            ESP_ERROR_CHECK (esp_netif_dhcpc_start(netif_mesh_sta) );
         }
-    #if MESH_USE_TIMER
+    #if CONFIG_MESH_ENABLE_TIMEOUT
         // 停止并删除定时器
         esp_timer_stop(mesh_timer);
         esp_timer_delete(mesh_timer);
@@ -393,10 +374,9 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
     my_mesh_task_start();
 }
 
-#if MESH_USE_TIMER
+#if CONFIG_MESH_ENABLE_TIMEOUT
 static void mesh_timeout_callback(void* arg)
 {
-    ESP_LOGW(MESH_TAG, "mesh timer callback!");
     // 停止并删除定时器
     esp_timer_stop(mesh_timer);
     esp_timer_delete(mesh_timer);
@@ -417,7 +397,6 @@ static void mesh_timeout_callback(void* arg)
         // 取消Wifi初始化
         ESP_ERROR_CHECK(esp_wifi_deinit());
         main_set_wifi_init(false);
-        ESP_LOGW(MESH_TAG, "wifi stop.");
 
         // 销毁创建的mesh网络接口
         esp_netif_destroy(netif_mesh_sta);
@@ -453,7 +432,6 @@ void mesh_start(void)
     // 为mesh创建网络接口
     if(netif_mesh_sta == NULL && netif_mesh_ap == NULL) {
         ESP_ERROR_CHECK(esp_netif_create_default_wifi_mesh_netifs(&netif_mesh_sta, &netif_mesh_ap));
-        ESP_LOGI(MESH_TAG, "Create mesh netif");
     }
 
     // wifi未初始化
@@ -462,7 +440,6 @@ void mesh_start(void)
         wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_wifi_init(&config));
         main_set_wifi_init(true);
-        ESP_LOGI(MESH_TAG, "Wifi init");
     }
     
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL));

@@ -54,7 +54,6 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
     if ((event_base == WIFI_EVENT) && (event_id == WIFI_EVENT_STA_START)) {
         // 创建任务，开启smartconfig
         xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 3, NULL);
-        ESP_LOGI(TAG, "SmartConfig task created");
     }
     // 连上ap，获得ip
     else if ((event_base == IP_EVENT) && (event_id == IP_EVENT_STA_GOT_IP)) {
@@ -99,7 +98,6 @@ static void smartconfig_task(void * parm)
     ESP_ERROR_CHECK( esp_smartconfig_set_type(SC_TYPE_ESPTOUCH_AIRKISS) );
     smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
     ESP_ERROR_CHECK( esp_smartconfig_start(&cfg) );
-    ESP_LOGW(TAG, "Start SmartConfig in task!");
     while (1) {
         // 等待事件发生，只要有一个事件发生即可，且退出时对应事件清零
         uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT | ESPTOUCH_DONE_BIT | GOT_INFO_BIT,
@@ -110,7 +108,7 @@ static void smartconfig_task(void * parm)
         }
 
         if(uxBits & GOT_INFO_BIT) {
-            ESP_LOGI(TAG, " Into task GOT_INFO_BIT......");
+            ESP_LOGI(TAG, "GOT_INFO_BIT......");
             wifi_config_t wifi_config;
             char ssid[33] = { 0 };
             char password[65] = { 0 };
@@ -163,7 +161,6 @@ static void smartconfig_task(void * parm)
             // 销毁创建的sta网络接口
             esp_netif_destroy(netif_sta);
             netif_sta = NULL;
-            ESP_LOGI(TAG, "Destroy sta netif");
 
             // 连接成功，开始mesh
             mesh_start();
@@ -175,13 +172,12 @@ static void smartconfig_task(void * parm)
 
 void smartconfig_start(void)
 {
-    ESP_LOGI(TAG, "SC start!");
+    ESP_LOGI(TAG, "SmartConfig start!");
     s_wifi_event_group = xEventGroupCreate();
     // ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     if(netif_sta == NULL){
         netif_sta = esp_netif_create_default_wifi_sta();
-        ESP_LOGI(TAG, "netif create!");
     }
 
     if (main_get_wifi_init() != true){ // 未初始化过wifi
@@ -189,7 +185,6 @@ void smartconfig_start(void)
         wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_wifi_init(&config));
         main_set_wifi_init(true);
-        ESP_LOGI(TAG, "Wifi init!");
     }
 
     // 注册相关事件的处理函数
@@ -199,5 +194,4 @@ void smartconfig_start(void)
 
     ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK( esp_wifi_start() );
-    ESP_LOGI(TAG, "Wifi start!");
 }

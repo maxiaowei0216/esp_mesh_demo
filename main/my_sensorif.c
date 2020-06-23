@@ -35,7 +35,6 @@ static void sensorif_task(void *args)
     BaseType_t ret;
     my_sensorif_data_t data = {0};
     my_sensorif_ctrl_t ctrl = {0};
-    ESP_LOGW(SENSORIF_TAG, "SENSORIF TASK START!");
 
     while (1)
     {
