@@ -11,6 +11,7 @@
  *                Constants
  *******************************************************/
 #define SENSOR_NUM_MAX  (5)
+#define AUTO_READ       (0)
 
 /*******************************************************
  *                Variable Definitions
@@ -56,6 +57,7 @@ static void sensorif_task(void *args)
             }
         }
         else { /* 没有从队列获取到消息 */
+        #if AUTO_READ
             ESP_LOGI(SENSORIF_TAG, "No data received from sensorif queue!");
             // 循环读取各个sensor的数据并发送给mesh任务，
             // 由mesh任务发送数据到服务器端
@@ -71,6 +73,7 @@ static void sensorif_task(void *args)
                     vTaskDelay(100 / portTICK_PERIOD_MS);
                 }
             }
+        #endif
         }
     }
     vTaskDelete(NULL);
