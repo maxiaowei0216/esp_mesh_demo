@@ -105,6 +105,7 @@ void app_main(void)
         ESP_LOGE(MAIN_TAG, "Mesh queue create failed!");
     }
 
+    #if 1
     // 检查是否配置过mesh的路由器信息
     // 未配置的话启动smartconfig，利用手机app进行配置
     int ret = router_info_check();
@@ -115,6 +116,9 @@ void app_main(void)
         ESP_LOGI(MAIN_TAG, "Get router info failed, starting smartconfig!\n");
         smartconfig_start();
     }
+    #else
+    smartconfig_start();
+    #endif
 
     // 注册示例sensor到sensor接口
     example_sensor_init();

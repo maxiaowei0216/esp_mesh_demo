@@ -16,6 +16,7 @@
 #include "esp_mesh_internal.h"
 #include "nvs_flash.h"
 #include "esp_timer.h"
+#include "esp_netif.h"
 #include "freertos/task.h"
 
 #include "my_main.h"
@@ -52,7 +53,7 @@ static bool is_mesh_connected = false;
 static mesh_addr_t mesh_parent_addr;
 static int mesh_layer = -1;
 static esp_timer_handle_t mesh_timer;   /* 定时器handle */
-static esp_netif_t *netif_mesh = NULL;  /* mesh网络层handle */
+static esp_netif_t *netif_mesh_sta, *netif_mesh_ap;  /* mesh网络层handle */
 /*******************************************************
  *                Function Declarations
  *******************************************************/
@@ -173,14 +174,12 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(MESH_TAG, "<MESH_EVENT_MESH_STARTED>ID:"MACSTR"", MAC2STR(id.addr));
         is_mesh_connected = false;
         mesh_layer = esp_mesh_get_layer();
-        ESP_LOGI(MESH_TAG, "<MESH_EVENT_MESH_STARTED>mesh_layer=%d", mesh_layer);
     }
     break;
     case MESH_EVENT_STOPPED: {
         ESP_LOGI(MESH_TAG, "<MESH_EVENT_STOPPED>");
         is_mesh_connected = false;
         mesh_layer = esp_mesh_get_layer();
-        ESP_LOGI(MESH_TAG, "<MESH_EVENT_STOPPED>mesh_layer=%d", mesh_layer);
     }
     break;
     case MESH_EVENT_CHILD_CONNECTED: {
@@ -199,16 +198,16 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
     break;
     case MESH_EVENT_ROUTING_TABLE_ADD: {
         mesh_event_routing_table_change_t *routing_table = (mesh_event_routing_table_change_t *)event_data;
-        ESP_LOGW(MESH_TAG, "<MESH_EVENT_ROUTING_TABLE_ADD>add %d, new:%d",
+        ESP_LOGW(MESH_TAG, "<MESH_EVENT_ROUTING_TABLE_ADD>add %d, new:%d, layer:%d",
                  routing_table->rt_size_change,
-                 routing_table->rt_size_new);
+                 routing_table->rt_size_new, mesh_layer);
     }
     break;
     case MESH_EVENT_ROUTING_TABLE_REMOVE: {
         mesh_event_routing_table_change_t *routing_table = (mesh_event_routing_table_change_t *)event_data;
-        ESP_LOGW(MESH_TAG, "<MESH_EVENT_ROUTING_TABLE_REMOVE>remove %d, new:%d",
+        ESP_LOGW(MESH_TAG, "<MESH_EVENT_ROUTING_TABLE_REMOVE>remove %d, new:%d, layer:%d",
                  routing_table->rt_size_change,
-                 routing_table->rt_size_new);
+                 routing_table->rt_size_new, mesh_layer);
     }
     break;
     case MESH_EVENT_NO_PARENT_FOUND: {
@@ -231,7 +230,11 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         last_layer = mesh_layer;
         is_mesh_connected = true;
         if (esp_mesh_is_root()) {
-            tcpip_adapter_dhcpc_start(TCPIP_ADAPTER_IF_STA);
+            // 开启dhcp
+            esp_err_t err = esp_netif_dhcpc_start(netif_mesh_sta);
+            if(err != ESP_OK) {
+                ESP_LOGE(MESH_TAG, "mesh start dhcpc err = %X",err);
+            }
         }
         // 停止并删除定时器
         esp_timer_stop(mesh_timer);
@@ -347,6 +350,17 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                  router_switch->ssid, router_switch->channel, MAC2STR(router_switch->bssid));
     }
     break;
+    case MESH_EVENT_PS_PARENT_DUTY: {
+        mesh_event_ps_duty_t *ps_duty = (mesh_event_ps_duty_t *)event_data;
+        ESP_LOGI(MESH_TAG, "<MESH_EVENT_PS_PARENT_DUTY>duty:%d", ps_duty->duty);
+    }
+    break;
+    case MESH_EVENT_PS_CHILD_DUTY: {
+        mesh_event_ps_duty_t *ps_duty = (mesh_event_ps_duty_t *)event_data;
+        ESP_LOGI(MESH_TAG, "<MESH_EVENT_PS_CHILD_DUTY>cidx:%d, "MACSTR", duty:%d", ps_duty->child_connected.aid-1,
+                MAC2STR(ps_duty->child_connected.mac), ps_duty->duty);
+    }
+    break;
     default:
         ESP_LOGI(MESH_TAG, "unknown id:%d", event_id);
         break;
@@ -382,8 +396,10 @@ static void mesh_timeout_callback(void* arg)
         ESP_LOGW(MESH_TAG, "wifi stop.");
 
         // 销毁创建的mesh网络接口
-        esp_netif_destroy(netif_mesh);
-        netif_mesh = NULL;
+        esp_netif_destroy(netif_mesh_sta);
+        esp_netif_destroy(netif_mesh_ap);
+        netif_mesh_sta = NULL;
+        netif_mesh_ap  = NULL;
 
         // 启动smartconfig
         smartconfig_start();
@@ -410,8 +426,9 @@ void mesh_start(void)
     // printf("Read router success,ssid=%s,psw=%s\n",ssid,password);
 
     // 为mesh创建网络接口
-    if(netif_mesh == NULL) {
-        ESP_ERROR_CHECK(esp_netif_create_default_wifi_mesh_netifs(&netif_mesh, NULL));
+    if(netif_mesh_sta == NULL && netif_mesh_ap == NULL) {
+        ESP_ERROR_CHECK(esp_netif_create_default_wifi_mesh_netifs(&netif_mesh_sta, &netif_mesh_ap));
+        ESP_LOGI(MESH_TAG, "Create mesh netif");
     }
 
     // wifi未初始化
@@ -420,6 +437,7 @@ void mesh_start(void)
         wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_wifi_init(&config));
         main_set_wifi_init(true);
+        ESP_LOGI(MESH_TAG, "Wifi init");
     }
     
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL));
@@ -435,10 +453,22 @@ void mesh_start(void)
     ESP_ERROR_CHECK(esp_mesh_set_max_layer(CONFIG_MESH_MAX_LAYER));
     // 根节点投票阈值，默认为0.9
     ESP_ERROR_CHECK(esp_mesh_set_vote_percentage(1));
-    // 禁用mesh Power Save功能
+    // mesh接收队列长度
+    ESP_ERROR_CHECK(esp_mesh_set_xon_qsize(64));
+
+#ifdef CONFIG_MESH_ENABLE_PS
+    /* Enable mesh PS function */
+    ESP_ERROR_CHECK(esp_mesh_enable_ps());
+    /* better to increase the associate expired time, if a small duty cycle is set. */
+    ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(60));
+    /* better to increase the announce interval to avoid too much management traffic, if a small duty cycle is set. */
+    ESP_ERROR_CHECK(esp_mesh_set_announce_interval(600, 3300));
+#else
+    /* 禁用mesh Power Save功能 */
     ESP_ERROR_CHECK(esp_mesh_disable_ps());
-    // 超时时间，子节点超过此时间无数据则被剔除
+    /* 超时时间，子节点超过此时间无数据则被剔除 */
     ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(10));
+#endif
 
     mesh_cfg_t cfg = MESH_INIT_CONFIG_DEFAULT();
     /* mesh ID */
@@ -456,8 +486,17 @@ void mesh_start(void)
     ESP_ERROR_CHECK(esp_mesh_set_config(&cfg));
     /* mesh start */
     ESP_ERROR_CHECK(esp_mesh_start());
-    ESP_LOGI(MESH_TAG, "mesh starts successfully, heap:%d, %s\n",  esp_get_free_heap_size(),
-             esp_mesh_is_root_fixed() ? "root fixed" : "root not fixed");
+
+#ifdef CONFIG_MESH_ENABLE_PS
+    /* set the device active duty cycle. (default:12, MESH_PS_DEVICE_DUTY_REQUEST) */
+    ESP_ERROR_CHECK(esp_mesh_set_active_duty_cycle(CONFIG_MESH_PS_DEV_DUTY, CONFIG_MESH_PS_DEV_DUTY_TYPE));
+    /* set the network active duty cycle. (default:12, -1, MESH_PS_NETWORK_DUTY_APPLIED_ENTIRE) */
+    ESP_ERROR_CHECK(esp_mesh_set_network_duty_cycle(CONFIG_MESH_PS_NWK_DUTY, CONFIG_MESH_PS_NWK_DUTY_DURATION, CONFIG_MESH_PS_NWK_DUTY_RULE));
+#endif
+
+    ESP_LOGI(MESH_TAG, "mesh starts successfully, heap:%d, %s<%d>%s, ps:%d\n",  esp_get_minimum_free_heap_size(),
+             esp_mesh_is_root_fixed() ? "root fixed" : "root not fixed",
+             esp_mesh_get_topology(), esp_mesh_get_topology() ? "(chain)":"(tree)", esp_mesh_is_ps_enabled());
 
     /* 设定并启动超时定时器*/
     // 定时器参数

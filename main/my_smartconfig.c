@@ -18,7 +18,6 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
-#include "tcpip_adapter.h"
 #include "esp_smartconfig.h"
 
 #include "my_main.h"
@@ -76,7 +75,8 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
             ESP_LOGI(TAG, "Got SSID and password");
 
             // 保存得到的路由器信息
-            router_info = *((smartconfig_event_got_ssid_pswd_t *)event_data);
+            memcpy(&router_info, event_data, sizeof(smartconfig_event_got_ssid_pswd_t));
+            // router_info = *((smartconfig_event_got_ssid_pswd_t *)event_data);
 
             // 对应事件组置位
             xEventGroupSetBits(s_wifi_event_group, GOT_INFO_BIT);
@@ -143,12 +143,17 @@ static void smartconfig_task(void * parm)
             ESP_ERROR_CHECK( esp_wifi_disconnect() );
             ESP_ERROR_CHECK( esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config) );
             ESP_ERROR_CHECK( esp_wifi_connect() );
+            ESP_LOGI(TAG, "wifi connect.");
         }
 
         if(uxBits & ESPTOUCH_DONE_BIT) {
             ESP_LOGI(TAG, "smartconfig over");
             // 停止smartconfig
             esp_smartconfig_stop();
+            // 断开wifi
+            esp_wifi_disconnect();
+            // 停止wifi
+            esp_wifi_stop();
 
             // 取消注册的事件
             esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler);
@@ -158,6 +163,7 @@ static void smartconfig_task(void * parm)
             // 销毁创建的sta网络接口
             esp_netif_destroy(netif_sta);
             netif_sta = NULL;
+            ESP_LOGI(TAG, "Destroy sta netif");
 
             // 连接成功，开始mesh
             mesh_start();
@@ -176,7 +182,7 @@ void smartconfig_start(void)
         netif_sta = esp_netif_create_default_wifi_sta();
     }
 
-    if (main_get_wifi_init() != true){ // 未初始化过wifi       
+    if (main_get_wifi_init() != true){ // 未初始化过wifi
         // 初始化wifi
         wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_wifi_init(&config));
