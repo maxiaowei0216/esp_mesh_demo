@@ -11,7 +11,7 @@
  *                Constants
  *******************************************************/
 #define SENSOR_NUM_MAX  (5)
-#define AUTO_READ       (0)
+#define AUTO_READ       (1)
 
 /*******************************************************
  *                Variable Definitions

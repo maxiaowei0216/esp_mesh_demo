@@ -175,11 +175,13 @@ static void smartconfig_task(void * parm)
 
 void smartconfig_start(void)
 {
+    ESP_LOGI(TAG, "SC start!");
     s_wifi_event_group = xEventGroupCreate();
     // ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     if(netif_sta == NULL){
         netif_sta = esp_netif_create_default_wifi_sta();
+        ESP_LOGI(TAG, "netif create!");
     }
 
     if (main_get_wifi_init() != true){ // 未初始化过wifi
@@ -187,6 +189,7 @@ void smartconfig_start(void)
         wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_wifi_init(&config));
         main_set_wifi_init(true);
+        ESP_LOGI(TAG, "Wifi init!");
     }
 
     // 注册相关事件的处理函数
@@ -196,4 +199,5 @@ void smartconfig_start(void)
 
     ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK( esp_wifi_start() );
+    ESP_LOGI(TAG, "Wifi start!");
 }

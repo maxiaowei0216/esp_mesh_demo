@@ -32,11 +32,10 @@
  *                Constants
  *******************************************************/
 // #define SEND_TO_SERVER
-// #define RX_SIZE          (1500)
-// #define TX_SIZE          (1460)
-#if 0
+#define MESH_USE_TIMER  (1)
+#if 1
   // 测试时减少超时时间
-  #define MESH_TIMEOUT   (20)
+  #define MESH_TIMEOUT   (30)
 #else
   // 联网超时时间暂定为2分钟
   #define MESH_TIMEOUT   (120)
@@ -46,14 +45,15 @@
  *******************************************************/
 static const char *MESH_TAG = "mesh_main";
 static const uint8_t MESH_ID[6] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
-// static uint8_t tx_buf[TX_SIZE] = { 0, };
-// static uint8_t rx_buf[RX_SIZE] = { 0, };
-// static bool is_running = true;
 static bool is_mesh_connected = false;
 static mesh_addr_t mesh_parent_addr;
 static int mesh_layer = -1;
-static esp_timer_handle_t mesh_timer;   /* 定时器handle */
 static esp_netif_t *netif_mesh_sta, *netif_mesh_ap;  /* mesh网络层handle */
+
+#if MESH_USE_TIMER
+static esp_timer_handle_t mesh_timer;   /* 定时器handle */
+#endif
+
 /*******************************************************
  *                Function Declarations
  *******************************************************/
@@ -63,7 +63,10 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                         int32_t event_id, void *event_data);
 static void ip_event_handler(void *arg, esp_event_base_t event_base,
                         int32_t event_id, void *event_data);
+
+#if MESH_USE_TIMER
 static void mesh_timeout_callback(void* arg);
+#endif
 
 /*******************************************************
  *                Function Definitions
@@ -174,6 +177,18 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(MESH_TAG, "<MESH_EVENT_MESH_STARTED>ID:"MACSTR"", MAC2STR(id.addr));
         is_mesh_connected = false;
         mesh_layer = esp_mesh_get_layer();
+#if MESH_USE_TIMER
+        /* 设定并启动超时定时器*/
+        // 定时器参数
+        const esp_timer_create_args_t mesh_timer_args = {
+            .callback = &mesh_timeout_callback,
+            .name = "mesh-timeout"
+        };
+        // 创建定时器
+        ESP_ERROR_CHECK(esp_timer_create(&mesh_timer_args, &mesh_timer));
+        // 启动定时器
+        ESP_ERROR_CHECK(esp_timer_start_once(mesh_timer, (MESH_TIMEOUT)*1000*1000));
+#endif
     }
     break;
     case MESH_EVENT_STOPPED: {
@@ -236,12 +251,14 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 ESP_LOGE(MESH_TAG, "mesh start dhcpc err = %X",err);
             }
         }
+    #if MESH_USE_TIMER
         // 停止并删除定时器
         esp_timer_stop(mesh_timer);
         esp_timer_delete(mesh_timer);
         ESP_LOGI(MESH_TAG, "mesh timer deleted.");
+    #endif
         // 创建mesh任務
-        my_mesh_task_start();
+        // my_mesh_task_start();
     }
     break;
     case MESH_EVENT_PARENT_DISCONNECTED: {
@@ -372,8 +389,11 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
 {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
     ESP_LOGI(MESH_TAG, "<IP_EVENT_STA_GOT_IP>IP:" IPSTR, IP2STR(&event->ip_info.ip));
+    // 获取到IP，此时可以连接到外部网络，创建mesh任务
+    my_mesh_task_start();
 }
 
+#if MESH_USE_TIMER
 static void mesh_timeout_callback(void* arg)
 {
     ESP_LOGW(MESH_TAG, "mesh timer callback!");
@@ -388,11 +408,15 @@ static void mesh_timeout_callback(void* arg)
         esp_event_handler_unregister(MESH_EVENT, ESP_EVENT_ANY_ID, &mesh_event_handler);
 
         // 关闭mesh网络
-        esp_mesh_stop();
-        esp_mesh_deinit();
+        ESP_ERROR_CHECK (esp_mesh_stop() );
+        ESP_ERROR_CHECK (esp_mesh_deinit());
 
         // 关闭wifi
-        esp_wifi_stop();
+        ESP_ERROR_CHECK(esp_wifi_disconnect());
+        ESP_ERROR_CHECK(esp_wifi_stop());
+        // 取消Wifi初始化
+        ESP_ERROR_CHECK(esp_wifi_deinit());
+        main_set_wifi_init(false);
         ESP_LOGW(MESH_TAG, "wifi stop.");
 
         // 销毁创建的mesh网络接口
@@ -405,6 +429,7 @@ static void mesh_timeout_callback(void* arg)
         smartconfig_start();
     }
 }
+#endif
 
 void mesh_start(void)
 {
@@ -497,15 +522,4 @@ void mesh_start(void)
     ESP_LOGI(MESH_TAG, "mesh starts successfully, heap:%d, %s<%d>%s, ps:%d\n",  esp_get_minimum_free_heap_size(),
              esp_mesh_is_root_fixed() ? "root fixed" : "root not fixed",
              esp_mesh_get_topology(), esp_mesh_get_topology() ? "(chain)":"(tree)", esp_mesh_is_ps_enabled());
-
-    /* 设定并启动超时定时器*/
-    // 定时器参数
-    const esp_timer_create_args_t mesh_timer_args = {
-        .callback = &mesh_timeout_callback,
-        .name = "mesh-timeout"
-    };
-    // 创建定时器
-    ESP_ERROR_CHECK(esp_timer_create(&mesh_timer_args, &mesh_timer));
-    // 启动定时器
-    ESP_ERROR_CHECK(esp_timer_start_once(mesh_timer, (MESH_TIMEOUT)*1000*1000));
 }
