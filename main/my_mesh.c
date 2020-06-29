@@ -30,6 +30,7 @@
 static const char *MESH_TAG = "mesh_main";
 static const uint8_t MESH_ID[6] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
 static bool is_mesh_connected = false;
+static bool is_got_ip = false;
 static mesh_addr_t mesh_parent_addr;
 static int mesh_layer = -1;
 static esp_netif_t *netif_mesh_sta, *netif_mesh_ap;  /* mesh网络层handle */
@@ -63,11 +64,80 @@ static void my_mesh_task(void *arg)
     my_sensorif_data_t data = {0};  /* 接收到的sensor数据 */
     uint8_t sensor_ctrl = 1;        /* (假设的)控制sensor读取需要的数值 */
 
-#if CONFIG_MESH_DATA_SEND_TO_SERVER
+    mesh_rx_pending_t rx_pendig = {0};  /* 各接收队列中等待的数据个数 */
+
     mesh_data_t mesh_data;
-#endif
+    mesh_addr_t from, to;
+    int flag;
+
 
     while(1) {
+        /* 优先处理mesh网络内部的数据包 */
+        // 取得接收队列中数据包个数
+        esp_mesh_get_rx_pending(&rx_pendig);
+
+        // 接收发送向自己的数据包
+        while(rx_pendig.toSelf > 0) {
+            // 接收数据包
+            esp_mesh_recv(&from, &mesh_data, 0, &flag, NULL, 0);
+            // TODO: 从flag和mesh_data中对应变量，可以知道数据包的来源及协议
+            // 作针对性处理
+        #if 0
+            if(flag == MESH_DATA_FROMDS) {  /* 数据来自外部网络 */
+                // 根据收到的数据的协议来进行不同处理
+                switch(mesh_data.proto) {
+                case MESH_PROTO_BIN:
+                    break;
+                case MESH_PROTO_HTTP:
+                    break;
+                case MESH_PROTO_JSON:
+                    break;
+                case MESH_PROTO_MQTT:
+                    break;
+                case MESH_PROTO_AP:
+                    break;
+                case MESH_PROTO_STA:
+                    break;
+                default:
+                    break;
+                }
+            } else{   /* 数据来自其他节点 */
+                // do something
+            }
+        #endif
+            rx_pendig.toSelf--;
+            if(rx_pendig.toSelf == 0) {
+                // 检查在接收期间是否又收到数据包
+                esp_mesh_get_rx_pending(&rx_pendig);
+            }
+            ESP_LOGI(MESH_TAG, "Receiving toSelf package!");
+        }
+
+        // 接收发送向外网的数据包，并进行转发
+        // FIXME: 当未连接外网时，此类数据包会堆积并大量占用内存，待修改
+        if(is_got_ip) {
+            while(rx_pendig.toDS > 0) {    /* 目的地为外网的数据包 */
+                if(esp_mesh_is_root()){ /* 仅根结点可以向外网发数据包 */
+                    // 接收数据包,此处收到的flag=MESH_DATA_TODS
+                    esp_mesh_recv_toDS(&from, &to, &mesh_data, 0, &flag, NULL, 0);
+                    // 转发
+                    esp_mesh_send(&to, &mesh_data, flag, NULL, 0);
+
+                    rx_pendig.toDS--;
+                    if(rx_pendig.toDS == 0) {
+                        esp_mesh_get_rx_pending(&rx_pendig);
+                    }
+                    ESP_LOGI(MESH_TAG, "Receiving toDS package!");
+                }
+                else {
+                    // 发送向外网的数据会发到根结点进行转发，其他节点不应收到该数据
+                    ESP_LOGE(MESH_TAG, "This is not a root node but received toDS package!");
+                    break;
+                }
+            }
+        }
+
+        /* 处理本设备其他模块的数据 */
         // 从队列中读取sensorif发送的数据，无数据不等待
         ret = xQueueReceive(main_get_mesh_queue(), &data, 0);
         // 接收到sensor数据
@@ -88,11 +158,10 @@ static void my_mesh_task(void *arg)
             memcpy(ptr+1, data.data, data.num * sizeof(uint8_t));
             mesh_data.data = ptr;
             // 配置外部网络地址
-            mesh_addr_t mesh_addr;
-            IP4_ADDR(&mesh_addr.mip.ip4,1,2,3,4);
-            mesh_addr.mip.port = 80;
+            IP4_ADDR(&to.mip.ip4,1,2,3,4);
+            to.mip.port = 80;
             // 发送到外部网络
-            esp_mesh_send(&mesh_addr, &mesh_data, MESH_DATA_TODS, NULL, 0);
+            esp_mesh_send(&to, &mesh_data, MESH_DATA_TODS, NULL, 0);
 
             // 释放申请的内存
             vPortFree(ptr);
@@ -239,7 +308,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(MESH_TAG, "mesh timer deleted.");
     #endif
         // 创建mesh任務
-        // my_mesh_task_start();
+        my_mesh_task_start();
     }
     break;
     case MESH_EVENT_PARENT_DISCONNECTED: {
@@ -368,10 +437,17 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
 static void ip_event_handler(void *arg, esp_event_base_t event_base,
                         int32_t event_id, void *event_data)
 {
-    ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
-    ESP_LOGI(MESH_TAG, "<IP_EVENT_STA_GOT_IP>IP:" IPSTR, IP2STR(&event->ip_info.ip));
-    // 获取到IP，此时可以连接到外部网络，创建mesh任务
-    my_mesh_task_start();
+    if (event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
+        ESP_LOGI(MESH_TAG, "<IP_EVENT_STA_GOT_IP>IP:" IPSTR, IP2STR(&event->ip_info.ip));
+        // 获取到IP，此时可以连接到外部网络
+        is_got_ip = true;
+    }
+    else if(event_id == IP_EVENT_STA_LOST_IP) {
+        ESP_LOGI(MESH_TAG, "<IP_EVENT_STA_LOST_IP>");
+
+        is_got_ip = false;
+    }
 }
 
 #if CONFIG_MESH_ENABLE_TIMEOUT
@@ -385,6 +461,7 @@ static void mesh_timeout_callback(void* arg)
     if(is_mesh_connected == false){
         // 取消注册的事件
         esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler);
+        esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_LOST_IP, &ip_event_handler);
         esp_event_handler_unregister(MESH_EVENT, ESP_EVENT_ANY_ID, &mesh_event_handler);
 
         // 关闭mesh网络
@@ -443,6 +520,7 @@ void mesh_start(void)
     }
     
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_LOST_IP, &ip_event_handler, NULL));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
     ESP_ERROR_CHECK(esp_wifi_start());
 
